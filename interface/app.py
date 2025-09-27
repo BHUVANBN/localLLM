@@ -1,54 +1,80 @@
-from flask import Flask, request, render_template_string
+from flask import Flask, request, render_template_string, redirect, url_for
+from interface.chat import generate
 from rag.faiss_index import build_index, query_index
-from model.train_llm import TinyLLM
-import torch
-import sentencepiece as spm
+import os
+import tempfile
 
 app = Flask(__name__)
 
-# Load tokenizer & model
-sp = spm.SentencePieceProcessor()
-sp.load("tokenizer/mytok.model")
-vocab_size = sp.get_piece_size()
-device = torch.device("cpu")
-model = TinyLLM(vocab_size).to(device)
-model.load_state_dict(torch.load("model/tiny_llm.pt", map_location=device))
-model.eval()
+# Global in-memory index
+INDEX = None
+CHUNKS = None
+CURRENT_PDF = "data/pdfs/sample.pdf"
 
-# FAISS index
-index, chunks = build_index("data/pdfs/sample.pdf")
+def ensure_index(pdf_path: str):
+    global INDEX, CHUNKS, CURRENT_PDF
+    if INDEX is None or CHUNKS is None or pdf_path != CURRENT_PDF:
+        INDEX, CHUNKS = build_index(pdf_path)
+        CURRENT_PDF = pdf_path
 
-# Simple page
-HTML = '''
+
+PAGE = '''
+<h2>TinyLLM Chat with PDF</h2>
+<form method="POST" action="/upload" enctype="multipart/form-data" style="margin-bottom: 1em;">
+  <input type="file" name="pdf" accept="application/pdf">
+  <input type="submit" value="Upload PDF">
+  {% if current_pdf %}<span style="margin-left:1em;">Current PDF: {{ current_pdf }}</span>{% endif %}
+  <div style="font-size: 0.9em; color: #555;">If none uploaded, using default: data/pdfs/sample.pdf</div>
+  <hr>
+</form>
+
 <form method="POST">
-  Question: <input name="query" style="width:400px;">
+  <label>Question:</label>
+  <input name="query" style="width:500px;" autocomplete="off">
   <input type="submit" value="Ask">
 </form>
+
+{% if relevant %}
+<h4>Retrieved context:</h4>
+<ul>
+  {% for c in relevant %}<li>{{ c }}</li>{% endfor %}
+  </ul>
+{% endif %}
+
 {% if answer %}
 <h3>Answer:</h3>
-<p>{{answer}}</p>
+<div style="white-space: pre-wrap; border: 1px solid #ddd; padding: 10px;">{{answer}}</div>
 {% endif %}
 '''
 
-def generate(prompt, max_new_tokens=50):
-    ids = sp.encode(prompt, out_type=int)
-    input_ids = torch.tensor([ids], dtype=torch.long, device=device)
-    for _ in range(max_new_tokens):
-        with torch.no_grad():
-            logits = model(input_ids)
-            next_id = torch.argmax(logits[0, -1]).unsqueeze(0).unsqueeze(0)
-            input_ids = torch.cat([input_ids, next_id], dim=1)
-    return sp.decode(input_ids[0].tolist())
 
 @app.route("/", methods=["GET", "POST"])
 def chat():
+    ensure_index(CURRENT_PDF)
     answer = None
+    relevant = None
     if request.method == "POST":
-        query = request.form["query"]
-        relevant = query_index(index, chunks, query, top_k=2)
-        prompt = "\n".join(relevant) + f"\n\nQuestion: {query}\nAnswer:"
-        answer = generate(prompt)
-    return render_template_string(HTML, answer=answer)
+        query = request.form.get("query", "")
+        if query:
+            relevant = query_index(INDEX, CHUNKS, query, top_k=3)
+            prompt = "\n".join(relevant) + f"\n\nQuestion: {query}\nAnswer:"
+            answer = generate(prompt)
+    return render_template_string(PAGE, answer=answer, relevant=relevant, current_pdf=CURRENT_PDF)
+
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    file = request.files.get("pdf")
+    if not file or file.filename == "":
+        return redirect(url_for("chat"))
+    fd, path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+    file.save(path)
+    # build index for uploaded file
+    ensure_index(path)
+    return redirect(url_for("chat"))
+
 
 if __name__ == "__main__":
+    ensure_index(CURRENT_PDF)
     app.run(debug=True)

@@ -1,19 +1,41 @@
-import torch
-from transformers import AutoTokenizer, AutoModel
 import numpy as np
+import torch
+import sentencepiece as spm
 
-tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+from model.tiny_llm import TinyLLM
+
+_sp = None
+_model = None
+
+
+def _load_components():
+    global _sp, _model
+    if _sp is None:
+        _sp = spm.SentencePieceProcessor()
+        _sp.load("tokenizer/mytok.model")
+    if _model is None:
+        vocab_size = _sp.get_piece_size()
+        device = torch.device("cpu")
+        _model = TinyLLM(vocab_size).to(device)
+        state = torch.load("model/tiny_llm.pt", map_location=device)
+        _model.load_state_dict(state)
+        _model.eval()
+
 
 def embed_text(text_list):
-    embeddings = []
-    for text in text_list:
-        inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
-        with torch.no_grad():
-            out = model(**inputs, output_hidden_states=True, return_dict=True)
-            emb = out.last_hidden_state.mean(dim=1).squeeze().numpy()
-            embeddings.append(emb)
-    return np.array(embeddings)
+    _load_components()
+    device = torch.device("cpu")
+    embs = []
+    with torch.no_grad():
+        for text in text_list:
+            ids = _sp.encode(text, out_type=int)
+            if len(ids) == 0:
+                ids = [0]
+            token_embs = _model.emb(torch.tensor(ids, dtype=torch.long, device=device))
+            mean_emb = token_embs.mean(dim=0).cpu().numpy().astype("float32")
+            embs.append(mean_emb)
+    return np.stack(embs, axis=0)
+
 
 if __name__ == "__main__":
     from rag.pdf_chunks import extract_chunks

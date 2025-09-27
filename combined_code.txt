@@ -1,0 +1,750 @@
+===== ./cli.py =====
+# cli.py
+from interface.chat import generate, query_index, build_index, model, sp, device
+
+# Make sure PDF index is built
+index, chunks = build_index("data/pdfs/sample.pdf")
+
+print("=== TinyLLM CLI ===")
+print("Type 'exit' or 'quit' to stop\n")
+
+while True:
+    query = input("You: ").strip()
+    if query.lower() in ["exit", "quit"]:
+        break
+    relevant = query_index(index, chunks, query, top_k=2)
+    prompt = "\n".join(relevant) + f"\n\nQuestion: {query}\nAnswer:"
+    response = generate(prompt)
+    print("LLM:", response)
+
+
+
+===== ./data/train.txt =====
+Hello, I am a local LLM.
+I can answer questions based on my knowledge.
+Python is a programming language.
+Transformers are used for NLP tasks.
+FAISS helps search vectors efficiently.
+This is a small training corpus for testing.
+
+
+
+===== ./embeddings/embed_chunks.py =====
+import torch
+from transformers import AutoTokenizer, AutoModel
+import numpy as np
+
+tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+
+def embed_text(text_list):
+    embeddings = []
+    for text in text_list:
+        inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
+        with torch.no_grad():
+            out = model(**inputs, output_hidden_states=True, return_dict=True)
+            emb = out.last_hidden_state.mean(dim=1).squeeze().numpy()
+            embeddings.append(emb)
+    return np.array(embeddings)
+
+if __name__ == "__main__":
+    from rag.pdf_chunks import extract_chunks
+    chunks = extract_chunks("data/pdfs/sample.pdf")
+    vectors = embed_text(chunks)
+    print(vectors.shape)
+
+
+
+===== ./interface/app.py =====
+from flask import Flask, request, render_template_string
+from rag.faiss_index import build_index, query_index
+from model.train_llm import TinyLLM
+import torch
+import sentencepiece as spm
+
+app = Flask(__name__)
+
+# Load tokenizer & model
+sp = spm.SentencePieceProcessor()
+sp.load("tokenizer/mytok.model")
+vocab_size = sp.get_piece_size()
+device = torch.device("cpu")
+model = TinyLLM(vocab_size).to(device)
+model.load_state_dict(torch.load("model/tiny_llm.pt", map_location=device))
+model.eval()
+
+# FAISS index
+index, chunks = build_index("data/pdfs/sample.pdf")
+
+# Simple page
+HTML = '''
+<form method="POST">
+  Question: <input name="query" style="width:400px;">
+  <input type="submit" value="Ask">
+</form>
+{% if answer %}
+<h3>Answer:</h3>
+<p>{{answer}}</p>
+{% endif %}
+'''
+
+def generate(prompt, max_new_tokens=50):
+    ids = sp.encode(prompt, out_type=int)
+    input_ids = torch.tensor([ids], dtype=torch.long, device=device)
+    for _ in range(max_new_tokens):
+        with torch.no_grad():
+            logits = model(input_ids)
+            next_id = torch.argmax(logits[0, -1]).unsqueeze(0).unsqueeze(0)
+            input_ids = torch.cat([input_ids, next_id], dim=1)
+    return sp.decode(input_ids[0].tolist())
+
+@app.route("/", methods=["GET", "POST"])
+def chat():
+    answer = None
+    if request.method == "POST":
+        query = request.form["query"]
+        relevant = query_index(index, chunks, query, top_k=2)
+        prompt = "\n".join(relevant) + f"\n\nQuestion: {query}\nAnswer:"
+        answer = generate(prompt)
+    return render_template_string(HTML, answer=answer)
+
+if __name__ == "__main__":
+    app.run(debug=True)
+
+
+
+===== ./interface/chat.py =====
+import torch
+import sentencepiece as spm
+from model.train_llm import TinyLLM
+from rag.faiss_index import build_index, query_index
+
+# Load tokenizer
+sp = spm.SentencePieceProcessor()
+sp.load("tokenizer/mytok.model")
+vocab_size = sp.get_piece_size()
+
+# Load tiny LLM
+device = torch.device("cpu")
+model = TinyLLM(vocab_size).to(device)
+model.load_state_dict(torch.load("model/tiny_llm.pt", map_location=device))
+model.eval()
+
+# Build FAISS index for a PDF
+index, chunks = build_index("data/pdfs/sample.pdf")
+
+def generate(prompt, max_new_tokens=50):
+    ids = sp.encode(prompt, out_type=int)
+    input_ids = torch.tensor([ids], dtype=torch.long, device=device)
+    for _ in range(max_new_tokens):
+        with torch.no_grad():
+            logits = model(input_ids)
+            next_id = torch.argmax(logits[0, -1]).unsqueeze(0).unsqueeze(0)
+            input_ids = torch.cat([input_ids, next_id], dim=1)
+    return sp.decode(input_ids[0].tolist())
+
+# Chat CLI
+while True:
+    query = input("\nYou: ")
+    if query.lower() in ["exit", "quit"]:
+        break
+    relevant = query_index(index, chunks, query, top_k=2)
+    prompt = "\n".join(relevant) + f"\n\nQuestion: {query}\nAnswer:"
+    response = generate(prompt)
+    print("LLM:", response)
+
+
+
+===== ./model/train_llm.py =====
+import torch
+import torch.nn as nn
+
+class TinyLLM(nn.Module):
+    def __init__(self, vocab_size, emb_size=128, n_heads=2, n_layers=2, hidden=256):
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, emb_size)
+        self.layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(d_model=emb_size, nhead=n_heads, dim_feedforward=hidden)
+            for _ in range(n_layers)
+        ])
+        self.fc = nn.Linear(emb_size, vocab_size)
+
+    def forward(self, x):
+        x = self.embed(x)
+        for layer in self.layers:
+            x = layer(x)
+        return self.fc(x)
+
+# if __name__ == "__main__":
+#     # in train_llm.py or a new script
+#     vocab_size = 50  # matches current app.py model
+#     model = TinyLLM(vocab_size)
+#     torch.save(model.state_dict(), "model/tiny_llm.pt")
+#     print("Tiny LLM saved: model/tiny_llm.pt")
+
+if __name__ == "__main__":
+    import sentencepiece as spm
+
+    # Load tokenizer to get actual vocab size
+    sp = spm.SentencePieceProcessor()
+    sp.load("tokenizer/mytok.model")
+    vocab_size = sp.get_piece_size()  # e.g., 8000
+
+    model = TinyLLM(vocab_size)
+    torch.save(model.state_dict(), "model/tiny_llm.pt")
+    print(f"Tiny LLM saved with vocab_size={vocab_size} at model/tiny_llm.pt")
+
+
+
+===== ./rag/faiss_index.py =====
+import faiss
+import numpy as np
+from embeddings.embed_chunks import embed_text
+from rag.pdf_chunks import extract_chunks
+
+def build_index(pdf_path):
+    chunks = extract_chunks(pdf_path)
+    vectors = embed_text(chunks).astype('float32')
+    index = faiss.IndexFlatL2(vectors.shape[1])
+    index.add(vectors)
+    return index, chunks
+
+def query_index(index, chunks, query_text, top_k=3):
+    query_vector = embed_text([query_text]).astype('float32')
+    D, I = index.search(query_vector, top_k)
+    return [chunks[i] for i in I[0]]
+
+
+
+===== ./rag/pdf_chunks.py =====
+import PyPDF2
+
+def extract_chunks(pdf_path, chunk_size=100):
+    reader = PyPDF2.PdfReader(pdf_path)
+    text = " ".join([p.extract_text() for p in reader.pages if p.extract_text()])
+    words = text.split()
+    chunks = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
+    return chunks
+
+if __name__ == "__main__":
+    chunks = extract_chunks("data/pdfs/sample.pdf")
+    print(chunks[:2])
+
+
+
+===== ./requirements.txt =====
+adblockparser==0.7
+aiodns==3.2.0
+aiofiles==24.1.0
+aiohappyeyeballs==2.6.1
+aiohttp==3.11.16
+aiomultiprocess==0.9.0
+aioquic==1.2.0
+aiosignal==1.4.0
+aiosqlite==0.21.0
+altair==5.5.0
+annotated-types==0.7.0
+anyio==4.8.0
+apt-listchanges==4.8
+argcomplete==3.6.2
+argon2-cffi==25.1.0
+argon2-cffi-bindings==25.1.0
+asgiref==3.9.1
+asn1crypto==1.5.1
+asttokens==3.0.0
+async-timeout==5.0.1
+attrs==25.3.0
+audioop-lts==0.2.2
+autocommand==2.2.2
+Automat==25.4.16
+babel==2.17.0
+backoff==2.2.1
+bcrypt==4.3.0
+beautifulsoup4==4.13.5
+blinker==1.9.0
+Brlapi==0.8.7
+Brotli==1.1.0
+cachetools==6.2.0
+censys==2.2.18
+certifi==2025.1.31
+certipy-ad==5.0.3
+cffi==2.0.0
+chardet==5.2.0
+charset-normalizer==3.4.3
+cheroot==10.0.1+ds1
+CherryPy==18.10.0
+cherrypy-cors==1.6
+click==8.1.8
+click-plugins==1.1.1.2
+colorama==0.4.6
+constantly==23.10.4
+contourpy==1.3.1
+cryptography==43.0.0
+cssselect==1.3.0
+cupshelpers==1.0
+cycler==0.12.1
+dbus-python==1.4.0
+decorator==5.2.1
+Deprecated==1.2.18
+dill==0.4.0
+distlib==0.4.0
+distro==1.9.0
+dnspython==2.7.0
+email_validator==2.2.0
+et_xmlfile==2.0.0
+executing==2.2.0
+ExifRead==3.0.0
+faiss-cpu==1.12.0
+fastapi==0.115.11
+ffmpy==0.6.1
+filelock==3.19.1
+Flask==3.1.1
+fonttools==4.57.0
+frozenlist==1.7.0
+fs==2.4.16
+fsspec==2024.6.1
+ghp-import==2.1.0
+gitdb==4.0.12
+GitPython==3.1.45
+gpg==1.24.2
+gradio==5.47.2
+gradio_client==1.13.3
+greenlet==3.1.0
+groovy==0.1.2
+gssapi==1.10.0
+gyp-next==0.16.2
+h11==0.14.0
+h2==4.2.0
+hf-xet==1.1.10
+hpack==4.0.0
+html5lib-modern==1.2
+httpagentparser==1.9.1
+httpcore==1.0.7
+httplib2==0.22.0
+httpx==0.28.1
+huggingface-hub==0.35.1
+hyperframe==6.0.0
+hyperlink==21.0.0
+idna==3.10
+impacket==0.13.0.dev0
+importlib_metadata==8.7.0
+incremental==24.7.2
+inflect==7.5.0
+iniconfig==1.1.1
+invoke==2.2.0
+ipwhois==1.2.0
+ipython==8.35.0
+itsdangerous==2.2.0
+jaraco.collections==5.1.0
+jaraco.context==6.0.1
+jaraco.functools==4.1.0
+jaraco.text==4.0.0
+jedi==0.19.1
+Jinja2==3.1.6
+joblib==1.4.2
+kaitaistruct==0.10
+kali-tweaks==2023.3.2
+kiwisolver==1.4.7
+lazr.restfulclient==0.14.6
+lazr.uri==1.0.6
+ldap3==2.9.1
+ldapdomaindump==0.9.4
+legacy-cgi==2.6.3
+legacycrypt==0.3
+lightdm-gtk-greeter-settings==1.2.3
+limits==4.4.1
+linkify-it-py==2.0.3
+livereload==2.7.1
+louis==3.35.0
+lunr==0.8.0
+lxml==6.0.1
+lz4==4.4.4+dfsg
+Mako==1.3.9.dev0
+Markdown==3.7
+markdown-it-py==3.0.0
+MarkupSafe==2.1.5
+matplotlib==3.10.1+dfsg1
+matplotlib-inline==0.1.7
+mdurl==0.1.2
+mechanize==0.4.10
+mergedeep==1.3.4
+mitmproxy==12.1.2
+mkdocs==1.6.1
+mkdocs-get-deps==0.2.0
+more-itertools==10.8.0
+mpmath==1.3.0
+msgpack==1.0.3
+multidict==6.4.3
+narwhals==2.2.0
+nassl==5.3.0
+netaddr==1.3.0
+netifaces==0.11.0
+networkx==3.2.1
+nltk==3.9.1
+numpy==2.2.4
+oauthlib==3.3.1
+olefile==0.47
+onboard==1.4.1
+openpyxl==3.1.5
+orjson==3.11.3
+packaging==25.0
+pandas==2.3.2
+paramiko==3.5.1
+parso==0.8.4
+passlib==1.7.4
+Paste==3.10.1
+PasteDeploy==3.1.0
+PasteScript==3.7.0
+pathspec==0.12.1
+pexpect==4.9.0
+phonenumbers==8.12.57
+pillow==11.3.0
+pipx==1.7.1
+platformdirs==4.4.0
+playwright==0.0.0
+plotly==6.3.0
+pluggy==1.6.0
+pluginbase==1.0.1
+ply==3.11
+pooch==1.8.2
+portend==3.2.0
+prettytable==3.15.1
+prompt_toolkit==3.0.52
+propcache==0.3.1
+protobuf==6.32.1
+psutil==7.0.0
+ptyprocess==0.7.0
+publicsuffix2==2.20191221
+publicsuffixlist==0.9.3
+pure_eval==0.2.3
+pyarrow==21.0.0
+pyasn1==0.6.1
+pyasn1_modules==0.4.1
+pyasyncore==1.0.2
+pycairo==1.27.0
+pycares==4.4.0
+pycparser==2.23
+pycryptodomex==3.20.0
+pycups==2.0.4
+pycurl==7.45.6
+pydantic==2.10.6
+pydantic_core==2.27.2
+pydeck==0.9.1
+pydot==2.0.0
+pydub==0.25.1
+pyee==13.0.0
+pygexf==0.2.2
+Pygments==2.18.0
+PyGObject==3.50.0
+pygraphviz==1.14
+PyHamcrest==2.1.0
+pyinotify==0.9.6
+PyJWT==2.10.1
+pylsqpack==0.3.22
+PyNaCl==1.5.0
+pyOpenSSL==25.1.0
+pyparsing==3.1.2
+pypdf==5.4.0
+PyPDF2==3.0.1
+pyperclip==1.8.2
+PyQt5==5.15.11
+PyQt5_sip==12.17.0
+pyserial==3.5
+pysmbc==1.0.25.1
+PySocks==1.7.1
+pytest==8.3.5
+python-apt==3.0.0
+python-dateutil==2.9.0
+python-debian==1.0.1
+python-debianbts==4.1.1
+python-docx==1.2.0
+python-dotenv==1.0.1
+python-multipart==0.0.20
+python-pptx==0.6.18
+python-whois==0.9.3
+pytz==2025.2
+pyxdg==0.28
+PyYAML==6.0.2
+pyyaml_env_tag==1.1
+pyzipper==0.3.6
+qiskit==2.1.2
+redis==6.4.0
+regex==2024.11.6
+reportbug==13.2.0
+repoze.lru==0.7
+requests==2.32.5
+requests-file==2.1.0
+retrying==1.3.3
+rich==13.9.4
+Routes==2.5.1
+ruamel.yaml==0.18.10
+ruamel.yaml.clib==0.2.12
+ruff==0.13.2
+rustworkx==0.17.1
+safehttpx==0.1.6
+safetensors==0.6.2
+scapy==2.6.1
+scipy==1.15.3
+secure==0.3.0
+semantic-version==2.10.0
+sentencepiece==0.2.1
+service-identity==24.2.0
+setproctitle==1.3.6
+setuptools==78.1.1
+shellingham==1.5.4
+shodan==1.31.0
+simplejson==3.20.1
+six==1.17.0
+slowapi==0.1.4
+smbmap==1.10.7
+smmap==5.0.2
+sniffio==1.3.1
+sortedcontainers==2.4.0
+soupsieve==2.7
+sslyze==6.2.0
+stack-data==0.6.3
+starlette==0.46.1
+stevedore==5.5.0
+streamlit==1.49.1
+sympy==1.14.0
+tabulate==0.9.0
+Tempita==0.6.0
+tempora==5.7.0
+tenacity==9.1.2
+termcolor==2.4.0
+theHarvester==4.8.2
+tldextract==5.1.2
+tls-parser==1.2.2
+tokenizers==0.22.1
+toml==0.10.2
+tomlkit==0.13.3
+torch==2.8.0+cpu
+torchaudio==2.8.0+cpu
+torchvision==0.23.0+cpu
+tornado==6.4.2
+tqdm==4.67.1
+traitlets==5.14.3
+transformers==4.56.2
+Twisted==25.5.0
+typeguard==4.4.4
+typer==0.19.2
+types-aiofiles==24.1
+types-antlr4-python3-runtime==4.13
+types-assertpy==1.1
+types-atheris==2.3
+types-aws-xray-sdk==2.14
+types-beautifulsoup4==4.12
+types-bleach==6.2
+types-boltons==24.1
+types-braintree==4.31
+types-cachetools==5.5
+types-caldav==1.3
+types-capturer==3.0
+types-cffi==1.16
+types-chevron==0.14
+types-click-default-group==1.2
+types-click-spinner==0.1
+types-colorama==0.4
+types-commonmark==0.9
+types-console-menu==0.8
+types-corus==0.10
+types-croniter==5.0.1
+types-dateparser==1.2
+types-decorator==5.1
+types-defusedxml==0.7
+types-Deprecated==1.2.15
+types-docker==7.1
+types-dockerfile-parse==2.0
+types-docutils==0.21
+types-editdistance==0.8
+types-entrypoints==0.4
+types-ExifRead==3.0
+types-fanstatic==1.4
+types-first==2.0
+types-flake8==7.1
+types-flake8-bugbear==24.12.12
+types-flake8-builtins==2.5
+types-flake8-docstrings==1.7
+types-flake8-rst-docstrings==0.3
+types-flake8-simplify==0.21
+types-flake8-typing-imports==1.16
+types-Flask-Cors==5.0
+types-Flask-Migrate==4.0
+types-Flask-SocketIO==5.4
+types-fpdf2==2.8.2
+types-gdb==15.0
+types-gevent==24.11
+types-google-cloud-ndb==2.3
+types-greenlet==3.1
+types-hdbcli==2.23
+types-html5lib==1.1
+types-httplib2==0.22
+types-humanfriendly==10.0
+types-hvac==2.3
+types-ibm-db==3.2.4
+types-icalendar==6.1
+types-influxdb-client==1.45
+types-inifile==0.4
+types-JACK-Client==0.5
+types-Jetson.GPIO==2.1
+types-jmespath==1.0
+types-jsonschema==4.23
+types-jwcrypto==1.5
+types-keyboard==0.13
+types-ldap3==2.9
+types-libsass==0.23
+types-lupa==2.2
+types-lzstring==1.0
+types-m3u8==6.0
+types-Markdown==3.7
+types-mock==5.1
+types-mypy-extensions==1.0
+types-mysqlclient==2.2
+types-nanoid==2.0.0
+types-netaddr==1.3
+types-netifaces==0.11
+types-networkx==3.4.2
+types-oauthlib==3.2
+types-objgraph==3.6
+types-olefile==0.47
+types-openpyxl==3.1.5
+types-opentracing==2.4
+types-paramiko==3.5
+types-parsimonious==0.10
+types-passlib==1.7
+types-passpy==1.0
+types-peewee==3.17.8
+types-pep8-naming==0.14
+types-pexpect==4.9
+types-pika-ts==1.3
+types-polib==1.2
+types-portpicker==1.6
+types-protobuf==5.29.1
+types-psutil==6.1
+types-psycopg2==2.9.10
+types-pyasn1==0.6
+types-pyaudio==0.2
+types-PyAutoGUI==0.9
+types-pycocotools==2.0
+types-pycurl==7.45.4
+types-pyfarmhash==0.4
+types-pyflakes==3.2
+types-pygit2==1.15
+types-Pygments==2.18
+types-pyinstaller==6.11
+types-pyjks==20.0
+types-PyMySQL==1.1
+types-pynput==1.7.7
+types-pyOpenSSL==24.1
+types-pyRFC3339==2.0.1
+types-PyScreeze==1.0.1
+types-pyserial==3.5
+types-pysftp==0.2
+types-pytest-lazy-fixture==0.6
+types-python-crontab==3.2
+types-python-datemath==3.0.1
+types-python-dateutil==2.9
+types-python-http-client==3.3.7
+types-python-jenkins==1.8
+types-python-jose==3.3
+types-python-nmap==0.7
+types-python-xlib==0.33
+types-pytz==2024.2
+types-pywin32==308
+types-pyxdg==0.28
+types-PyYAML==6.0
+types-qrbill==1.1
+types-qrcode==8.0
+types-regex==2024.11.6
+types-reportlab==4.2.5
+types-requests==2.32
+types-requests-oauthlib==2.0
+types-retry==0.9
+types-RPi.GPIO==0.7
+types-s2clientprotocol==5
+types-seaborn==0.13.2
+types-Send2Trash==1.8
+types-setuptools==75.6
+types-shapely==2.0
+types-simplejson==3.19
+types-singledispatch==4.1
+types-six==1.17
+types-slumber==0.7
+types-str2bool==1.1
+types-tabulate==0.9
+types-tensorflow==2.18.0
+types-TgCrypto==1.2
+types-toml==0.10
+types-toposort==1.10
+types-tqdm==4.67
+types-translationstring==1.4
+types-tree-sitter-languages==1.10
+types-ttkthemes==3.2
+types-ujson==5.10
+types-unidiff==0.7
+types-untangle==1.2
+types-usersettings==1.1
+types-uWSGI==2.0
+types-vobject==0.9.9
+types-waitress==3.0.1
+types-WebOb==1.8
+types-whatthepatch==1.0
+types-workalendar==17.0
+types-WTForms==3.2.1
+types-wurlitzer==3.1
+types-xdgenvpy==3.0
+types-xmltodict==0.14
+types-zstd==1.5
+types-zxcvbn==4.4
+typing_extensions==4.15.0
+tzdata==2025.2
+uc-micro-py==1.0.3
+ufoLib2==0.17.1
+ufw==0.36.2
+ujson==5.10.0
+unicodedata2==16.0.0
+urllib3==2.5.0
+urwid==2.6.16
+userpath==1.9.2
+uvicorn==0.32.0
+uvloop==0.21.0
+virtualenv==20.34.0
+wadllib==2.0.0
+wafw00f==2.3.1
+watchdog==6.0.0
+wcwidth==0.2.13
+webencodings==0.5.1
+WebOb==1.8.9
+websockets==15.0.1
+Werkzeug==3.1.3
+wfuzz==3.1.0
+wheel==0.46.1
+wrapt==1.15.0
+wsproto==1.2.0
+xdg==5
+XlsxWriter==3.1.9
+yara-python==4.5.4
+yarl==1.19.0
+zc.lockfile==3.0.post1
+zipp==3.23.0
+zope.interface==7.2
+zopfli==0.2.3.post1
+zstandard==0.25.0
+
+
+
+===== ./tokenizer/train_tokenizer.py =====
+import sentencepiece as spm
+
+spm.SentencePieceTrainer.Train(
+    input='data/train.txt',
+    model_prefix='tokenizer/mytok',
+    model_type='unigram',
+    vocab_size=50,   # <= 64 for small corpus
+    character_coverage=1.0
+)
+
+print("Tokenizer trained: tokenizer/mytok.model")
+
+
+
