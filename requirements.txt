@@ -19,6 +19,7 @@ asn1crypto==1.5.1
 asttokens==3.0.0
 async-timeout==5.0.1
 attrs==25.3.0
+audioop-lts==0.2.2
 autocommand==2.2.2
 Automat==25.4.16
 babel==2.17.0
@@ -60,6 +61,7 @@ executing==2.2.0
 ExifRead==3.0.0
 faiss-cpu==1.12.0
 fastapi==0.115.11
+ffmpy==0.6.1
 filelock==3.19.1
 Flask==3.1.1
 fonttools==4.57.0
@@ -70,7 +72,10 @@ ghp-import==2.1.0
 gitdb==4.0.12
 GitPython==3.1.45
 gpg==1.24.2
+gradio==5.47.2
+gradio_client==1.13.3
 greenlet==3.1.0
+groovy==0.1.2
 gssapi==1.10.0
 gyp-next==0.16.2
 h11==0.14.0
@@ -146,7 +151,9 @@ oauthlib==3.3.1
 olefile==0.47
 onboard==1.4.1
 openpyxl==3.1.5
+orjson==3.11.3
 packaging==25.0
+pandas==2.3.2
 paramiko==3.5.1
 parso==0.8.4
 passlib==1.7.4
@@ -169,6 +176,7 @@ portend==3.2.0
 prettytable==3.15.1
 prompt_toolkit==3.0.52
 propcache==0.3.1
+protobuf==6.32.1
 psutil==7.0.0
 ptyprocess==0.7.0
 publicsuffix2==2.20191221
@@ -188,6 +196,7 @@ pydantic==2.10.6
 pydantic_core==2.27.2
 pydeck==0.9.1
 pydot==2.0.0
+pydub==0.25.1
 pyee==13.0.0
 pygexf==0.2.2
 Pygments==2.18.0
@@ -218,6 +227,7 @@ python-dotenv==1.0.1
 python-multipart==0.0.20
 python-pptx==0.6.18
 python-whois==0.9.3
+pytz==2025.2
 pyxdg==0.28
 PyYAML==6.0.2
 pyyaml_env_tag==1.1
@@ -234,15 +244,19 @@ rich==13.9.4
 Routes==2.5.1
 ruamel.yaml==0.18.10
 ruamel.yaml.clib==0.2.12
+ruff==0.13.2
 rustworkx==0.17.1
+safehttpx==0.1.6
 safetensors==0.6.2
 scapy==2.6.1
 scipy==1.15.3
 secure==0.3.0
+semantic-version==2.10.0
 sentencepiece==0.2.1
 service-identity==24.2.0
 setproctitle==1.3.6
 setuptools==78.1.1
+shellingham==1.5.4
 shodan==1.31.0
 simplejson==3.20.1
 six==1.17.0
@@ -258,6 +272,7 @@ starlette==0.46.1
 stevedore==5.5.0
 streamlit==1.49.1
 sympy==1.14.0
+tabulate==0.9.0
 Tempita==0.6.0
 tempora==5.7.0
 tenacity==9.1.2
@@ -267,13 +282,17 @@ tldextract==5.1.2
 tls-parser==1.2.2
 tokenizers==0.22.1
 toml==0.10.2
+tomlkit==0.13.3
 torch==2.8.0+cpu
+torchaudio==2.8.0+cpu
+torchvision==0.23.0+cpu
 tornado==6.4.2
 tqdm==4.67.1
 traitlets==5.14.3
 transformers==4.56.2
 Twisted==25.5.0
 typeguard==4.4.4
+typer==0.19.2
 types-aiofiles==24.1
 types-antlr4-python3-runtime==4.13
 types-assertpy==1.1
@@ -443,6 +462,7 @@ types-xmltodict==0.14
 types-zstd==1.5
 types-zxcvbn==4.4
 typing_extensions==4.15.0
+tzdata==2025.2
 uc-micro-py==1.0.3
 ufoLib2==0.17.1
 ufw==0.36.2
@@ -460,6 +480,7 @@ watchdog==6.0.0
 wcwidth==0.2.13
 webencodings==0.5.1
 WebOb==1.8.9
+websockets==15.0.1
 Werkzeug==3.1.3
 wfuzz==3.1.0
 wheel==0.46.1

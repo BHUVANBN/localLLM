@@ -1,0 +1,6 @@
+Hello, I am a local LLM.
+I can answer questions based on my knowledge.
+Python is a programming language.
+Transformers are used for NLP tasks.
+FAISS helps search vectors efficiently.
+This is a small training corpus for testing.
